@@ -38,6 +38,7 @@ from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from lightning.pytorch.loggers.logger import Logger, rank_zero_experiment
 from lightning.pytorch.loggers.utilities import _scan_checkpoints
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
+from lightning.pytorch.utilities.imports import _OMEGACONF_AVAILABLE
 from lightning.pytorch.utilities.rank_zero import rank_zero_only, rank_zero_warn
 
 if TYPE_CHECKING:
@@ -46,6 +47,27 @@ if TYPE_CHECKING:
     from wandb.wandb_run import Run
 
 _WANDB_AVAILABLE = RequirementCache("wandb>=0.12.10")
+
+
+def _convert_omegaconf_containers(config: Any) -> Any:
+    if not _OMEGACONF_AVAILABLE:
+        return config
+
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+
+    def convert(value: Any) -> Any:
+        if isinstance(value, (DictConfig, ListConfig)):
+            return OmegaConf.to_container(value)
+        # Walk plain containers and leave custom objects for W&B's existing serialization.
+        if type(value) is dict:
+            return {key: convert(item) for key, item in value.items()}
+        if type(value) is list:
+            return [convert(item) for item in value]
+        if type(value) is tuple:
+            return tuple(convert(item) for item in value)
+        return value
+
+    return convert(config)
 
 
 class WandbLogger(Logger):
@@ -407,7 +429,11 @@ class WandbLogger(Logger):
                 self._experiment = wandb._attach(attach_id)
             else:
                 # create new wandb process
-                self._experiment = wandb.init(**self._wandb_init)
+                wandb_init = self._wandb_init
+                if "config" in wandb_init:
+                    config = _convert_omegaconf_containers(wandb_init["config"])
+                    wandb_init = {**wandb_init, "config": config}
+                self._experiment = wandb.init(**wandb_init)
 
                 # define default x-axis
                 if isinstance(self._experiment, (Run, RunDisabled)) and getattr(
@@ -431,6 +457,7 @@ class WandbLogger(Logger):
     def log_hyperparams(self, params: Union[dict[str, Any], Namespace]) -> None:
         params = _convert_params(params)
         params = _sanitize_callable_params(params)
+        params = _convert_omegaconf_containers(params)
         params = _convert_json_serializable(params)
         self.experiment.config.update(params, allow_val_change=True)
 

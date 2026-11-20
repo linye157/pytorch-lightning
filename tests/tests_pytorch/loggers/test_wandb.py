@@ -125,6 +125,42 @@ def test_wandb_logger_init(wandb_mock):
     assert logger.version == wandb_mock.init().id
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_wandb_logger_init_omegaconf(wandb_mock, nested):
+    omegaconf = pytest.importorskip("omegaconf")
+    plain_config = {"train": {"lr": 0.001}, "variants": [{"seed": 7}]}
+    config = omegaconf.OmegaConf.create(plain_config)
+    wandb_mock.run = None
+
+    if nested:
+        WandbLogger(config={"hydra": config}).experiment
+        expected = {"hydra": plain_config}
+    else:
+        WandbLogger(config=config).experiment
+        expected = plain_config
+
+    actual = wandb_mock.init.call_args.kwargs["config"]
+    assert type(actual) is dict
+    assert actual == expected
+    train_config = actual["hydra"] if nested else actual
+    assert type(train_config) is dict
+    assert type(train_config["variants"]) is list
+    assert type(train_config["variants"][0]) is dict
+
+
+def test_wandb_logger_log_hyperparams_omegaconf(wandb_mock):
+    omegaconf = pytest.importorskip("omegaconf")
+    config = omegaconf.OmegaConf.create({"train": {"lr": 0.001}, "variants": [{"seed": 7}]})
+    logger = WandbLogger()
+
+    logger.log_hyperparams({"hydra": config, "variants": config.variants, "path": Path("path")})
+
+    wandb_mock.run.config.update.assert_called_once_with(
+        {"hydra": {"train": {"lr": 0.001}, "variants": [{"seed": 7}]}, "variants": [{"seed": 7}], "path": "path"},
+        allow_val_change=True,
+    )
+
+
 def test_wandb_logger_sync_tensorboard(wandb_mock):
     logger = WandbLogger(sync_tensorboard=True)
     wandb_mock.run = None
